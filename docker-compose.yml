@@ -1,0 +1,95 @@
+# docker-compose.yml
+# PulseNet AI — Local MLOps Stack
+#
+# Services:
+#   api       → FastAPI inference  (http://localhost:8000)
+#   mlflow    → MLflow UI          (http://localhost:5000)  ← auth note below
+#   streamlit → Streamlit dashboard (http://localhost:8501)
+#
+# [AUDIT High #10 FIX]: MLflow now uses SQLite backend-store (not raw filesystem).
+# Raw /mlflow/mlruns filesystem backend is corrupt with concurrent writes.
+# SQLite serialises writes correctly for single-node deployments.
+# For production multi-node: use --backend-store-uri postgresql://...
+#
+# [AUDIT Blocker #4 FIX]: audit log volume mounted to persist HIPAA audit logs.
+# In production: replace ./audit-logs with a compliant log sink mount.
+#
+# [AUDIT Blocker #1b]: /metrics port is NOT published externally.
+# Prometheus scrapes via internal Docker network (service name 'api', port 8000).
+# Only publish 8000 for REST API. /metrics is accessible inside the compose network.
+
+services:
+
+  # ── FastAPI Inference API ────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models:ro             # trained weights (read-only)
+      - ./audit-logs:/app/logs              # HIPAA audit log persistence
+    environment:
+      - MODEL_PATH=/app/models/resnet1d_ecg_model.pth
+      - SCALER_PATH=/app/models/scaler.pkl
+      - MANIFEST_PATH=/app/models/manifest.json
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - PULSENET_API_KEY=${PULSENET_API_KEY:-}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+      - AUDIT_LOG_PATH=/app/logs/audit.log
+      # METRICS_ALLOWED_IPS: restrict /metrics to Prometheus scraper IP
+      # In production: METRICS_ALLOWED_IPS=<prometheus-container-ip>
+      - METRICS_ALLOWED_IPS=${METRICS_ALLOWED_IPS:-127.0.0.1}
+      # TRUSTED_PROXIES: set to your Nginx/HAProxy IP for correct rate limiting
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prom_multiproc
+    depends_on:
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── MLflow Tracking Server ───────────────────────────────────────────────
+  # [AUDIT High #10 FIX]:
+  # 1. Backend-store: SQLite (was raw filesystem — corrupt on concurrent writes)
+  # 2. Port 5000 is NOT published externally in production — access via
+  #    'docker compose exec mlflow mlflow ui' or through a reverse proxy with auth.
+  #    For this local dev stack, port is exposed for convenience.
+  # PRODUCTION NOTE: Add an Nginx basic-auth proxy in front of MLflow.
+  # Never expose MLflow port 5000 in a hospital network scan.
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.10.0
+    ports:
+      - "127.0.0.1:5000:5000"          # bind to localhost only — not 0.0.0.0
+    volumes:
+      - ./mlruns:/mlflow/mlruns
+    command: >
+      mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri sqlite:////mlflow/mlruns/mlflow.db
+        --default-artifact-root /mlflow/mlruns
+    restart: unless-stopped
+
+  # ── Streamlit Dashboard ──────────────────────────────────────────────────
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./models:/app/models:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ── Named volumes ────────────────────────────────────────────────────────
+# audit-logs: bind mount above (./audit-logs) — change to a named volume or
+#             NFS mount for production HIPAA compliance

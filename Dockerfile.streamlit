@@ -1,0 +1,33 @@
+# Dockerfile.streamlit
+# PulseNet AI — Streamlit Dashboard Service
+#
+# [AUDIT High #3 FIX]: Added non-root user 'pulsenet'.
+# Running containers as root rejected by hospital CIS Docker Benchmark audit.
+
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Create non-root user
+RUN adduser --disabled-password --no-create-home --uid 10001 pulsenet
+
+# Create required directories
+RUN mkdir -p /app/models && chown -R pulsenet:pulsenet /app/models
+
+# Install Streamlit-only dependencies
+# [AUDIT High #1 FIX]: exact version pins in requirements-app.txt
+COPY requirements-app.txt .
+RUN pip install --no-cache-dir -r requirements-app.txt
+
+# Copy all files needed by the Streamlit dashboard
+COPY model.py utils.py app.py ./
+
+# Switch to non-root user
+USER pulsenet
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "app.py", \
+     "--server.port=8501", \
+     "--server.address=0.0.0.0", \
+     "--server.fileWatcherType=none"]

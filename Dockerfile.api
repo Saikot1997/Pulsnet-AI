@@ -1,0 +1,40 @@
+# Dockerfile.api
+# PulseNet AI — FastAPI Inference Service
+#
+# [AUDIT High #3 FIX]: Added non-root user 'pulsenet'.
+# Running production inference containers as root is flagged as medium-high
+# severity in hospital container policy audits (CIS Docker Benchmark 4.1).
+# Trivy/Grype scans used in hospital vendor assessments flag root containers.
+
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Prometheus multiprocess mode — shared directory for uvicorn workers
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp/prom_multiproc
+
+# Create non-root user BEFORE creating directories so ownership is correct
+# [AUDIT High #3 FIX]: was missing non-root user — hospital IT security rejection
+RUN adduser --disabled-password --no-create-home --uid 10001 pulsenet
+
+# Create required directories and set ownership to non-root user
+RUN mkdir -p /tmp/prom_multiproc /app/models /app/logs && \
+    chown -R pulsenet:pulsenet /tmp/prom_multiproc /app/models /app/logs
+
+# Install API-only dependencies — no Streamlit, no seaborn, no pandas
+# [AUDIT High #1 FIX]: exact version pins in requirements-api.txt
+COPY requirements-api.txt .
+RUN pip install --no-cache-dir -r requirements-api.txt
+
+# Copy project source
+COPY model.py utils.py ./
+RUN mkdir -p api
+COPY api/__init__.py api/main.py ./api/
+
+# Switch to non-root user before CMD
+USER pulsenet
+
+EXPOSE 8000
+
+# Single-worker default. Scale with --workers N when needed.
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
