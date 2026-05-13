@@ -1,4 +1,4 @@
-# ⚡ PulseNet AI v4
+# ⚡ PulseNet AI
 ### Automated Cardiac Anomaly Detection from ECG Signals using Deep Residual Networks
 
 ![Python](https://img.shields.io/badge/Python-3.10-blue)
